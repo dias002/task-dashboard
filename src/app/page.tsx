@@ -45,13 +45,13 @@ export default function Home() {
 
   const stats = useMemo(() => {
     const open = tasks.filter((task) => !task.done).length;
-    return { open, done: tasks.length - open, urgent: tasks.filter((task) => !task.done && task.urgency === 5).length };
+    return { open, urgent: tasks.filter((task) => task.urgency === 5).length };
   }, [tasks]);
 
   async function loadTasks() {
     setLoading(true);
     try {
-      const res = await fetch('/api/tasks', { cache: 'no-store' });
+      const res = await fetch('/api/tasks?status=open', { cache: 'no-store' });
       if (!res.ok) throw new Error(await apiError(res, 'Не удалось загрузить задачи'));
       const data = await res.json() as { tasks?: Task[] };
       setTasks(data.tasks ?? []);
@@ -121,7 +121,7 @@ export default function Home() {
     }
 
     const nextDone = !task.done;
-    setTasks((current) => current.map((item) => item.number === task.number ? { ...item, done: nextDone } : item));
+    setTasks((current) => nextDone ? current.filter((item) => item.number !== task.number) : current.map((item) => item.number === task.number ? { ...item, done: nextDone } : item));
     const res = await fetch(`/api/tasks/${task.number}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -134,7 +134,7 @@ export default function Home() {
       return;
     }
     const data = await res.json() as { task: Task };
-    setTasks((current) => current.map((item) => item.number === task.number ? data.task : item));
+    if (!data.task.done) setTasks((current) => current.map((item) => item.number === task.number ? data.task : item));
   }
 
   return (
@@ -148,7 +148,7 @@ export default function Home() {
         <div className="stats">
           <div><strong>{stats.open}</strong><span>открыто</span></div>
           <div><strong>{stats.urgent}</strong><span>срочно 5/5</span></div>
-          <div><strong>{stats.done}</strong><span>готово</span></div>
+          <a className="statLink" href="/completed"><strong>↗</strong><span>выполненные</span></a>
         </div>
       </section>
 
@@ -172,8 +172,8 @@ export default function Home() {
         </aside>
 
         <section className="panel tasks">
-          <div className="tasksHead"><div><p className="eyebrow">Очередь</p><h2>Список задач</h2></div><button onClick={loadTasks}>Обновить</button></div>
-          {loading ? <div className="empty">Загружаю задачи...</div> : tasks.length === 0 ? <div className="empty">Пока задач нет.</div> : (
+          <div className="tasksHead"><div><p className="eyebrow">Очередь</p><h2>Открытые задачи</h2></div><div className="headActions"><a href="/completed">Выполненные</a><button onClick={loadTasks}>Обновить</button></div></div>
+          {loading ? <div className="empty">Загружаю задачи...</div> : tasks.length === 0 ? <div className="empty">Открытых задач нет.</div> : (
             <div className="list">
               {tasks.map((task) => <article className={`task ${task.done ? 'done' : ''}`} key={task.id}>
                 <button className="check" onClick={() => toggleTask(task)} aria-label="Переключить выполнение">{task.done ? '✓' : ''}</button>

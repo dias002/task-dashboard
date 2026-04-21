@@ -23,6 +23,8 @@ type GitHubIssue = {
   pull_request?: unknown;
 };
 
+export type TaskStatus = 'open' | 'completed' | 'all';
+
 const TASK_LABEL = 'dashboard-task';
 const URGENCY_PREFIX = 'urgency-';
 
@@ -84,6 +86,12 @@ function toTask(issue: GitHubIssue): Task {
   };
 }
 
+function githubState(status: TaskStatus): 'open' | 'closed' | 'all' {
+  if (status === 'completed') return 'closed';
+  if (status === 'open') return 'open';
+  return 'all';
+}
+
 export function validateTaskInput(data: { title?: unknown; author?: unknown; urgency?: unknown }): string | null {
   const title = typeof data.title === 'string' ? data.title.trim() : '';
   const author = typeof data.author === 'string' ? data.author.trim() : '';
@@ -97,10 +105,10 @@ export function validateTaskInput(data: { title?: unknown; author?: unknown; urg
   return null;
 }
 
-export async function listTasks(): Promise<Task[]> {
+export async function listTasks(status: TaskStatus = 'open'): Promise<Task[]> {
   const { repo } = getConfig();
   const issues = await github<GitHubIssue[]>(
-    `/repos/${repo}/issues?state=all&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
+    `/repos/${repo}/issues?state=${githubState(status)}&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
   );
 
   return issues
@@ -135,4 +143,20 @@ export async function setTaskDone(number: number, done: boolean): Promise<Task> 
   });
 
   return toTask(issue);
+}
+
+export async function deleteCompletedTask(number: number): Promise<void> {
+  const { repo } = getConfig();
+  const issue = await github<GitHubIssue>(`/repos/${repo}/issues/${number}`);
+  if (issue.state !== 'closed') throw new Error('Удалять можно только выполненные задачи');
+
+  const labels = issue.labels
+    .map(labelName)
+    .filter((name) => name && name !== TASK_LABEL && !name.startsWith(URGENCY_PREFIX));
+
+  await github<GitHubIssue>(`/repos/${repo}/issues/${number}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ labels }),
+  });
 }

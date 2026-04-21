@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createTask, listTasks, validateTaskInput } from '@/lib/githubTasks';
+import { createTask, listTasks, validateTaskInput, type TaskStatus } from '@/lib/githubTasks';
 
 function errorMessage(e: unknown): string {
   return e instanceof Error && e.message.trim() ? e.message : 'Internal server error';
 }
 
-export async function GET() {
+function parseStatus(value: string | null): TaskStatus {
+  if (value === 'completed' || value === 'all') return value;
+  return 'open';
+}
+
+export async function GET(req: NextRequest) {
   try {
-    return NextResponse.json({ tasks: await listTasks() });
+    const status = parseStatus(req.nextUrl.searchParams.get('status'));
+    return NextResponse.json({ tasks: await listTasks(status) });
   } catch (e: unknown) {
     return NextResponse.json({ error: errorMessage(e) }, { status: 500 });
   }
