@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { deleteCompletedTask, updateTask, type WorkflowStatus } from '@/lib/githubTasks';
+import { deleteCompletedTask, getTask, updateTask, type WorkflowStatus } from '@/lib/githubTasks';
 import { isOwner } from '@/lib/ownerAuth';
+import { canUpdateTask, getCurrentUser } from '@/lib/userAuth';
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -10,10 +11,19 @@ function errorMessage(e: unknown): string {
 
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
-    if (!(await isOwner())) return NextResponse.json({ error: 'Only owner can update tasks' }, { status: 401 });
-
     const { id } = await params;
     const data = await req.json();
+    const owner = await isOwner();
+    const user = owner ? null : await getCurrentUser();
+    if (!owner) {
+      if (!user) return NextResponse.json({ error: 'Only owner can update tasks' }, { status: 401 });
+      const currentTask = await getTask(Number(id));
+      if (!canUpdateTask(user, currentTask)) return NextResponse.json({ error: 'Only assignee can update this task' }, { status: 403 });
+      if (!user.permissions.manageTasks && (data.assigneeId !== undefined || data.urgency !== undefined)) {
+        return NextResponse.json({ error: 'Only manager can reassign or change priority' }, { status: 403 });
+      }
+    }
+
     const task = await updateTask(Number(id), {
       done: typeof data.done === 'boolean' ? data.done : undefined,
       status: typeof data.status === 'string' ? data.status as WorkflowStatus : undefined,

@@ -4,10 +4,17 @@ import { useEffect, useMemo, useState } from 'react';
 
 type WorkflowStatus = 'todo' | 'in-progress' | 'review' | 'completed';
 
+type RolePermissions = {
+  viewAllTasks: boolean;
+  manageTasks: boolean;
+  manageTeam: boolean;
+};
+
 type Role = {
   id: string;
   name: string;
   color: string;
+  permissions: RolePermissions;
 };
 
 type Person = {
@@ -15,7 +22,9 @@ type Person = {
   name: string;
   roleId: string;
   handle: string;
+  login: string;
   active: boolean;
+  hasPassword?: boolean;
 };
 
 type TeamConfig = {
@@ -40,6 +49,15 @@ type Task = {
 
 type Notice = { type: 'ok' | 'error'; text: string } | null;
 
+type CurrentUser = {
+  id: string;
+  name: string;
+  login: string;
+  roleName: string;
+  roleColor: string;
+  permissions: RolePermissions;
+} | null;
+
 const STATUS_META: Record<WorkflowStatus, { label: string; short: string; className: string }> = {
   todo: { label: 'Нужно сделать', short: 'To do', className: 'statusTodo' },
   'in-progress': { label: 'В работе', short: 'Active', className: 'statusProgress' },
@@ -49,12 +67,12 @@ const STATUS_META: Record<WorkflowStatus, { label: string; short: string; classN
 
 const DEFAULT_TEAM: TeamConfig = {
   roles: [
-    { id: 'owner', name: 'Владелец', color: '#68f4ff' },
-    { id: 'design', name: 'Дизайн', color: '#ff3df2' },
-    { id: 'dev', name: 'Разработка', color: '#b8ff4f' },
-    { id: 'analytics', name: 'Аналитик', color: '#ffb84f' },
-    { id: 'marketing', name: 'Маркетолог', color: '#497cff' },
-    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff' },
+    { id: 'owner', name: 'Владелец', color: '#68f4ff', permissions: { viewAllTasks: true, manageTasks: true, manageTeam: true } },
+    { id: 'design', name: 'Дизайн', color: '#ff3df2', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'dev', name: 'Разработка', color: '#b8ff4f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'analytics', name: 'Аналитик', color: '#ffb84f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'marketing', name: 'Маркетолог', color: '#497cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
   ],
   people: [],
   updatedAt: new Date(0).toISOString(),
@@ -89,7 +107,10 @@ export default function Home() {
   const [urgency, setUrgency] = useState(3);
   const [newAssigneeId, setNewAssigneeId] = useState('');
   const [password, setPassword] = useState('');
+  const [accountLogin, setAccountLogin] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
   const [owner, setOwner] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
@@ -99,6 +120,7 @@ export default function Home() {
   const peopleById = useMemo(() => new Map(team.people.map((person) => [person.id, person])), [team.people]);
   const rolesById = useMemo(() => new Map(team.roles.map((role) => [role.id, role])), [team.roles]);
   const activePeople = useMemo(() => team.people.filter((person) => person.active), [team.people]);
+  const canManageTasks = owner || Boolean(currentUser?.permissions.manageTasks);
 
   const stats = useMemo(() => {
     const open = tasks.filter((task) => !task.done).length;
@@ -111,11 +133,12 @@ export default function Home() {
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
       if (statusFilter !== 'all' && task.status !== statusFilter) return false;
+      if (currentUser && !owner && !currentUser.permissions.viewAllTasks && !currentUser.permissions.manageTasks && task.assigneeId !== currentUser.id) return false;
       if (assigneeFilter === 'unassigned' && task.assigneeId) return false;
       if (assigneeFilter !== 'all' && assigneeFilter !== 'unassigned' && task.assigneeId !== assigneeFilter) return false;
       return true;
     });
-  }, [assigneeFilter, statusFilter, tasks]);
+  }, [assigneeFilter, currentUser, owner, statusFilter, tasks]);
 
   async function loadTeam() {
     try {
@@ -146,7 +169,14 @@ export default function Home() {
     loadTeam();
     loadTasks();
     fetch('/api/owner').then((res) => res.json()).then((data) => setOwner(Boolean(data.owner))).catch(() => setOwner(false));
+    fetch('/api/session', { cache: 'no-store' }).then((res) => res.json()).then((data) => setCurrentUser(data.user ?? null)).catch(() => setCurrentUser(null));
   }, []);
+
+  useEffect(() => {
+    if (currentUser && !owner && !currentUser.permissions.viewAllTasks && !currentUser.permissions.manageTasks) {
+      setAssigneeFilter(currentUser.id);
+    }
+  }, [currentUser, owner]);
 
   async function createTask(e: React.FormEvent) {
     e.preventDefault();
@@ -157,7 +187,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ title, author, urgency, assigneeId: owner ? newAssigneeId : undefined }),
+        body: JSON.stringify({ title, author: author || currentUser?.name, urgency, assigneeId: canManageTasks ? newAssigneeId : undefined }),
       });
       if (!res.ok) throw new Error(await apiError(res, 'Не удалось добавить задачу'));
       const data = await res.json() as { task: Task };
@@ -197,9 +227,36 @@ export default function Home() {
     setOwner(false);
   }
 
+  async function loginAccount(e: React.FormEvent) {
+    e.preventDefault();
+    setNotice(null);
+    const res = await fetch('/api/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ login: accountLogin, password: accountPassword }),
+    });
+    if (!res.ok) {
+      setNotice({ type: 'error', text: await apiError(res, 'Неверный логин или пароль') });
+      return;
+    }
+    const data = await res.json() as { user: CurrentUser };
+    setCurrentUser(data.user);
+    setAccountLogin('');
+    setAccountPassword('');
+    setNotice({ type: 'ok', text: 'Аккаунт исполнителя открыт' });
+  }
+
+  async function logoutAccount() {
+    await fetch('/api/session', { method: 'DELETE', credentials: 'include' });
+    setCurrentUser(null);
+    setAssigneeFilter('all');
+  }
+
   async function patchTask(task: Task, payload: Partial<Pick<Task, 'status' | 'assigneeId' | 'urgency'>> & { done?: boolean }) {
-    if (!owner) {
-      setNotice({ type: 'error', text: 'Только владелец может менять задачи' });
+    const canEditTask = owner || currentUser?.permissions.manageTasks || task.assigneeId === currentUser?.id;
+    if (!canEditTask) {
+      setNotice({ type: 'error', text: 'Можно менять только свои задачи' });
       return;
     }
 
@@ -258,13 +315,30 @@ export default function Home() {
             </div>
             <label><span>Задача</span><textarea value={title} onChange={(e) => setTitle(e.target.value)} maxLength={180} required placeholder="Что нужно сделать?" /></label>
             <label><span>Автор</span><input value={author} onChange={(e) => setAuthor(e.target.value)} maxLength={80} placeholder="Гость" /></label>
-            {owner ? (
+            {canManageTasks ? (
               <label><span>Исполнитель</span><select value={newAssigneeId} onChange={(e) => setNewAssigneeId(e.target.value)}><option value="">Не назначать</option>{activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
             ) : null}
             <label><span>Срочность: {urgency}/5</span><input type="range" min="1" max="5" value={urgency} onChange={(e) => setUrgency(Number(e.target.value))} /></label>
             <div className="scale"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span></div>
             <button disabled={saving}>{saving ? 'Добавляем...' : 'Добавить'}</button>
           </form>
+
+          <div className="panel owner">
+            <h2>Аккаунт</h2>
+            <p>{currentUser ? `Вы вошли как ${currentUser.name}.` : 'Войдите, чтобы видеть свои задачи и менять их статус.'}</p>
+            {currentUser ? (
+              <div className="ownerActions">
+                <span className="roleChip" style={{ borderColor: currentUser.roleColor, color: currentUser.roleColor }}>{currentUser.roleName}</span>
+                <button onClick={logoutAccount}>Выйти</button>
+              </div>
+            ) : (
+              <form className="accountLogin" onSubmit={loginAccount}>
+                <input value={accountLogin} onChange={(e) => setAccountLogin(e.target.value)} placeholder="Логин" required />
+                <input type="password" value={accountPassword} onChange={(e) => setAccountPassword(e.target.value)} placeholder="Пароль" required />
+                <button>Войти</button>
+              </form>
+            )}
+          </div>
 
           <div className="panel owner">
             <h2>Владелец</h2>
@@ -308,8 +382,9 @@ export default function Home() {
             </div>
             <select value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
               <option value="all">Все исполнители</option>
+              {currentUser ? <option value={currentUser.id}>Мои задачи</option> : null}
               <option value="unassigned">Без исполнителя</option>
-              {activePeople.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+              {activePeople.filter((person) => person.id !== currentUser?.id).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
             </select>
           </div>
 
@@ -318,10 +393,11 @@ export default function Home() {
               {filteredTasks.map((task) => {
                 const assignee = task.assigneeId ? peopleById.get(task.assigneeId) : null;
                 const role = assignee ? rolesById.get(assignee.roleId) : null;
+                const canEditTask = owner || currentUser?.permissions.manageTasks || task.assigneeId === currentUser?.id;
 
                 return (
                   <article className={`task issueCard ${task.done ? 'done' : ''}`} key={task.id}>
-                    <button className="check" onClick={() => patchTask(task, { done: true })} aria-label="Завершить задачу">✓</button>
+                    <button className="check" disabled={!canEditTask} onClick={() => patchTask(task, { done: true })} aria-label="Завершить задачу">✓</button>
                     <div className="issueContent">
                       <div className="meta">
                         <span className={`statusPill ${STATUS_META[task.status].className}`}>{STATUS_META[task.status].label}</span>
@@ -338,7 +414,7 @@ export default function Home() {
                         <span className={`urgency u${task.urgency}`}>P{task.urgency}</span>
                         {assignee ? <span className="roleChip" style={{ borderColor: role?.color, color: role?.color }}>{assignee.name}</span> : <span className="roleChip mutedChip">Без исполнителя</span>}
                       </div>
-                      {owner ? (
+                      {canManageTasks ? (
                         <div className="taskControls">
                           <select value={task.assigneeId ?? ''} onChange={(e) => patchTask(task, { assigneeId: e.target.value || null })}>
                             <option value="">Без исполнителя</option>
@@ -347,6 +423,12 @@ export default function Home() {
                           <select value={task.urgency} onChange={(e) => patchTask(task, { urgency: Number(e.target.value) })}>
                             {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>P{value}</option>)}
                           </select>
+                          <div className="segmented compactSegment">
+                            {(['todo', 'in-progress', 'review'] as WorkflowStatus[]).map((status) => <button className={task.status === status ? 'active' : ''} key={status} onClick={() => patchTask(task, { status })}>{STATUS_META[status].short}</button>)}
+                          </div>
+                        </div>
+                      ) : canEditTask ? (
+                        <div className="taskControls taskControlsSolo">
                           <div className="segmented compactSegment">
                             {(['todo', 'in-progress', 'review'] as WorkflowStatus[]).map((status) => <button className={task.status === status ? 'active' : ''} key={status} onClick={() => patchTask(task, { status })}>{STATUS_META[status].short}</button>)}
                           </div>

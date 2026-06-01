@@ -1,11 +1,19 @@
 import { randomUUID } from 'crypto';
+import { hashPassword, isPasswordHash } from '@/lib/passwords';
 
 export type WorkflowStatus = 'todo' | 'in-progress' | 'review' | 'completed';
+
+export type RolePermissions = {
+  viewAllTasks: boolean;
+  manageTasks: boolean;
+  manageTeam: boolean;
+};
 
 export type Role = {
   id: string;
   name: string;
   color: string;
+  permissions: RolePermissions;
 };
 
 export type Person = {
@@ -13,7 +21,9 @@ export type Person = {
   name: string;
   roleId: string;
   handle: string;
+  login: string;
   active: boolean;
+  passwordHash?: string;
 };
 
 export type TeamConfig = {
@@ -74,12 +84,12 @@ export const WORKFLOW_STATUSES: Array<{ id: WorkflowStatus; label: string }> = [
 
 const DEFAULT_TEAM: TeamConfig = {
   roles: [
-    { id: 'owner', name: 'Владелец', color: '#68f4ff' },
-    { id: 'design', name: 'Дизайн', color: '#ff3df2' },
-    { id: 'dev', name: 'Разработка', color: '#b8ff4f' },
-    { id: 'analytics', name: 'Аналитик', color: '#ffb84f' },
-    { id: 'marketing', name: 'Маркетолог', color: '#497cff' },
-    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff' },
+    { id: 'owner', name: 'Владелец', color: '#68f4ff', permissions: { viewAllTasks: true, manageTasks: true, manageTeam: true } },
+    { id: 'design', name: 'Дизайн', color: '#ff3df2', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'dev', name: 'Разработка', color: '#b8ff4f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'analytics', name: 'Аналитик', color: '#ffb84f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'marketing', name: 'Маркетолог', color: '#497cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
   ],
   people: [],
   updatedAt: new Date(0).toISOString(),
@@ -286,6 +296,12 @@ export async function createTask(data: { title: string; author?: string; urgency
   return toTask(issue);
 }
 
+export async function getTask(number: number): Promise<Task> {
+  const { repo } = getConfig();
+  const issue = await github<GitHubIssue>(`/repos/${repo}/issues/${number}`);
+  return toTask(issue);
+}
+
 export async function updateTask(
   number: number,
   data: { done?: boolean; status?: WorkflowStatus; assigneeId?: string | null; urgency?: number }
@@ -351,33 +367,83 @@ function validColor(value: unknown, fallback: string): string {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value.trim()) ? value.trim() : fallback;
 }
 
-function sanitizeTeamConfig(data: Partial<TeamConfig>): TeamConfig {
+function normalizeLogin(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase().replace(/[^a-z0-9@._+-]/g, '').slice(0, 80) : '';
+}
+
+function defaultRolePermissions(roleId: string): RolePermissions {
+  const isOwnerRole = roleId === 'owner';
+  return { viewAllTasks: isOwnerRole, manageTasks: isOwnerRole, manageTeam: isOwnerRole };
+}
+
+function normalizePermissions(value: unknown, fallback: RolePermissions): RolePermissions {
+  const data = value && typeof value === 'object' ? value as Partial<RolePermissions> : {};
+  return {
+    viewAllTasks: typeof data.viewAllTasks === 'boolean' ? data.viewAllTasks : fallback.viewAllTasks,
+    manageTasks: typeof data.manageTasks === 'boolean' ? data.manageTasks : fallback.manageTasks,
+    manageTeam: typeof data.manageTeam === 'boolean' ? data.manageTeam : fallback.manageTeam,
+  };
+}
+
+export function rolePermissions(role?: Pick<Role, 'id' | 'permissions'>): RolePermissions {
+  if (!role) return defaultRolePermissions('');
+  return normalizePermissions(role.permissions, defaultRolePermissions(role.id));
+}
+
+function transientPassword(person: unknown): string {
+  const data = person && typeof person === 'object' ? person as { password?: unknown; newPassword?: unknown } : {};
+  const value = typeof data.password === 'string' && data.password.trim() ? data.password : data.newPassword;
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function sanitizeTeamConfig(data: Partial<TeamConfig>, previous?: TeamConfig): TeamConfig {
   const roles = Array.isArray(data.roles) ? data.roles : [];
   const people = Array.isArray(data.people) ? data.people : [];
+  const previousRoles = new Map((previous?.roles ?? []).map((role) => [role.id, role]));
+  const previousPeople = new Map((previous?.people ?? []).map((person) => [person.id, person]));
   const normalizedRoles = roles
-    .map((role) => ({
-      id: typeof role.id === 'string' && role.id.trim() ? role.id.trim().slice(0, 60) : safeId('role', role.name),
-      name: typeof role.name === 'string' ? role.name.trim().slice(0, 50) : '',
-      color: validColor(role.color, '#68f4ff'),
-    }))
+    .map((role) => {
+      const id = typeof role.id === 'string' && role.id.trim() ? role.id.trim().slice(0, 60) : safeId('role', role.name);
+      return {
+        id,
+        name: typeof role.name === 'string' ? role.name.trim().slice(0, 50) : '',
+        color: validColor(role.color, '#68f4ff'),
+        permissions: normalizePermissions(role.permissions, previousRoles.get(id)?.permissions ?? defaultRolePermissions(id)),
+      };
+    })
     .filter((role) => role.name);
 
   const roleIds = new Set(normalizedRoles.map((role) => role.id));
   const fallbackRoleId = normalizedRoles[0]?.id ?? 'owner';
   const normalizedPeople = people
-    .map((person) => ({
-      id: typeof person.id === 'string' && person.id.trim() ? person.id.trim().slice(0, 60) : safeId('person', person.name),
-      name: typeof person.name === 'string' ? person.name.trim().slice(0, 60) : '',
-      roleId: typeof person.roleId === 'string' && roleIds.has(person.roleId) ? person.roleId : fallbackRoleId,
-      handle: typeof person.handle === 'string' ? person.handle.trim().slice(0, 60) : '',
-      active: person.active !== false,
-    }))
+    .map((person) => {
+      const id = typeof person.id === 'string' && person.id.trim() ? person.id.trim().slice(0, 60) : safeId('person', person.name);
+      const previousPerson = previousPeople.get(id);
+      const password = transientPassword(person);
+      const passwordHash = password ? hashPassword(password) : isPasswordHash(person.passwordHash) ? person.passwordHash : previousPerson?.passwordHash;
+      return {
+        id,
+        name: typeof person.name === 'string' ? person.name.trim().slice(0, 60) : '',
+        roleId: typeof person.roleId === 'string' && roleIds.has(person.roleId) ? person.roleId : fallbackRoleId,
+        handle: typeof person.handle === 'string' ? person.handle.trim().slice(0, 80) : '',
+        login: normalizeLogin(person.login) || normalizeLogin(person.handle) || normalizeLogin(person.name),
+        active: person.active !== false,
+        ...(passwordHash ? { passwordHash } : {}),
+      };
+    })
     .filter((person) => person.name);
 
   return {
     roles: normalizedRoles.length ? normalizedRoles.slice(0, 16) : DEFAULT_TEAM.roles,
     people: normalizedPeople.slice(0, 80),
     updatedAt: new Date().toISOString(),
+  };
+}
+
+export function publicTeamConfig(config: TeamConfig) {
+  return {
+    ...config,
+    people: config.people.map(({ passwordHash, ...person }) => ({ ...person, hasPassword: Boolean(passwordHash) })),
   };
 }
 
@@ -409,8 +475,9 @@ export async function getTeamConfig(): Promise<TeamConfig> {
 
 export async function saveTeamConfig(data: Partial<TeamConfig>): Promise<TeamConfig> {
   const { repo } = getConfig();
-  const next = sanitizeTeamConfig(data);
   const issue = await findTeamConfigIssue();
+  const previous = parseJsonBlock<Partial<TeamConfig>>(issue?.body ?? null, CONFIG_META_RE);
+  const next = sanitizeTeamConfig(data, previous ? sanitizeTeamConfig(previous) : undefined);
 
   await ensureLabel(CONFIG_LABEL, '497cff', 'Service issue with dashboard team settings');
 

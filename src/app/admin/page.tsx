@@ -4,10 +4,17 @@ import { useEffect, useMemo, useState } from 'react';
 
 type WorkflowStatus = 'todo' | 'in-progress' | 'review' | 'completed';
 
+type RolePermissions = {
+  viewAllTasks: boolean;
+  manageTasks: boolean;
+  manageTeam: boolean;
+};
+
 type Role = {
   id: string;
   name: string;
   color: string;
+  permissions: RolePermissions;
 };
 
 type Person = {
@@ -15,7 +22,11 @@ type Person = {
   name: string;
   roleId: string;
   handle: string;
+  login: string;
   active: boolean;
+  hasPassword?: boolean;
+  password?: string;
+  newPassword?: string;
 };
 
 type TeamConfig = {
@@ -40,6 +51,12 @@ type Task = {
 
 type Notice = { type: 'ok' | 'error'; text: string } | null;
 
+type CurrentUser = {
+  id: string;
+  name: string;
+  permissions: RolePermissions;
+} | null;
+
 const STATUS_META: Record<WorkflowStatus, { label: string; short: string; className: string }> = {
   todo: { label: 'Нужно сделать', short: 'To do', className: 'statusTodo' },
   'in-progress': { label: 'В работе', short: 'Active', className: 'statusProgress' },
@@ -49,12 +66,12 @@ const STATUS_META: Record<WorkflowStatus, { label: string; short: string; classN
 
 const DEFAULT_TEAM: TeamConfig = {
   roles: [
-    { id: 'owner', name: 'Владелец', color: '#68f4ff' },
-    { id: 'design', name: 'Дизайн', color: '#ff3df2' },
-    { id: 'dev', name: 'Разработка', color: '#b8ff4f' },
-    { id: 'analytics', name: 'Аналитик', color: '#ffb84f' },
-    { id: 'marketing', name: 'Маркетолог', color: '#497cff' },
-    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff' },
+    { id: 'owner', name: 'Владелец', color: '#68f4ff', permissions: { viewAllTasks: true, manageTasks: true, manageTeam: true } },
+    { id: 'design', name: 'Дизайн', color: '#ff3df2', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'dev', name: 'Разработка', color: '#b8ff4f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'analytics', name: 'Аналитик', color: '#ffb84f', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'marketing', name: 'Маркетолог', color: '#497cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
+    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff', permissions: { viewAllTasks: false, manageTasks: false, manageTeam: false } },
   ],
   people: [],
   updatedAt: new Date(0).toISOString(),
@@ -66,6 +83,15 @@ function createId(prefix: string, name: string): string {
   const base = name.trim().toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 30);
   const suffix = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().slice(0, 6) : String(Date.now()).slice(-6);
   return `${prefix}-${base || 'item'}-${suffix}`;
+}
+
+function defaultPermissions(roleId: string): RolePermissions {
+  const enabled = roleId === 'owner';
+  return { viewAllTasks: enabled, manageTasks: enabled, manageTeam: enabled };
+}
+
+function normalizeLogin(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9@._+-]/g, '').slice(0, 80);
 }
 
 function formatDate(value: string): string {
@@ -85,17 +111,23 @@ export default function AdminPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [password, setPassword] = useState('');
   const [owner, setOwner] = useState(false);
+  const [currentUser, setCurrentUser] = useState<CurrentUser>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [roleName, setRoleName] = useState('');
   const [roleColor, setRoleColor] = useState(ROLE_COLORS[0]);
   const [personName, setPersonName] = useState('');
+  const [personLogin, setPersonLogin] = useState('');
   const [personHandle, setPersonHandle] = useState('');
+  const [personPassword, setPersonPassword] = useState('');
   const [personRoleId, setPersonRoleId] = useState('');
+  const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
 
   const rolesById = useMemo(() => new Map(team.roles.map((role) => [role.id, role])), [team.roles]);
   const peopleById = useMemo(() => new Map(team.people.map((person) => [person.id, person])), [team.people]);
+  const canManageTeam = owner || Boolean(currentUser?.permissions.manageTeam);
+  const canManageTasks = owner || Boolean(currentUser?.permissions.manageTasks);
 
   const stats = useMemo(() => {
     return {
@@ -109,20 +141,23 @@ export default function AdminPage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [teamRes, tasksRes, ownerRes] = await Promise.all([
+      const [teamRes, tasksRes, ownerRes, sessionRes] = await Promise.all([
         fetch('/api/team', { cache: 'no-store' }),
         fetch('/api/tasks?status=open', { cache: 'no-store' }),
         fetch('/api/owner'),
+        fetch('/api/session', { cache: 'no-store' }),
       ]);
       if (!teamRes.ok) throw new Error(await apiError(teamRes, 'Не удалось загрузить команду'));
       if (!tasksRes.ok) throw new Error(await apiError(tasksRes, 'Не удалось загрузить задачи'));
       const teamData = await teamRes.json() as { team?: TeamConfig };
       const taskData = await tasksRes.json() as { tasks?: Task[] };
       const ownerData = await ownerRes.json() as { owner?: boolean };
+      const sessionData = sessionRes.ok ? await sessionRes.json() as { user?: CurrentUser } : {};
       const nextTeam = teamData.team ?? DEFAULT_TEAM;
       setTeam(nextTeam);
       setTasks(taskData.tasks ?? []);
       setOwner(Boolean(ownerData.owner));
+      setCurrentUser(sessionData.user ?? null);
       if (!personRoleId) setPersonRoleId(nextTeam.roles[0]?.id ?? '');
     } catch (e) {
       setNotice({ type: 'error', text: e instanceof Error ? e.message : 'Ошибка загрузки админки' });
@@ -160,22 +195,35 @@ export default function AdminPage() {
   }
 
   async function saveTeam(nextTeam = team, message = 'Команда сохранена') {
-    if (!owner) {
-      setNotice({ type: 'error', text: 'Сначала войдите как владелец' });
+    if (!canManageTeam) {
+      setNotice({ type: 'error', text: 'Нужен доступ владельца или роль с правом команды' });
       return;
     }
 
     setSaving(true);
     try {
+      const payload = {
+        ...nextTeam,
+        people: nextTeam.people.map((person) => ({
+          ...person,
+          newPassword: passwordDrafts[person.id]?.trim() || person.newPassword,
+        })),
+      };
+      const logins = payload.people.map((person) => person.login.trim().toLowerCase()).filter(Boolean);
+      if (new Set(logins).size !== logins.length) {
+        setNotice({ type: 'error', text: 'Логины исполнителей должны быть уникальными' });
+        return;
+      }
       const res = await fetch('/api/team', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(nextTeam),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await apiError(res, 'Не удалось сохранить команду'));
       const data = await res.json() as { team: TeamConfig };
       setTeam(data.team);
+      setPasswordDrafts({});
       setNotice({ type: 'ok', text: message });
     } catch (e) {
       setNotice({ type: 'error', text: e instanceof Error ? e.message : 'Ошибка сохранения' });
@@ -188,7 +236,8 @@ export default function AdminPage() {
     e.preventDefault();
     const name = roleName.trim();
     if (!name) return;
-    const next = { ...team, roles: [...team.roles, { id: createId('role', name), name, color: roleColor }] };
+    const id = createId('role', name);
+    const next = { ...team, roles: [...team.roles, { id, name, color: roleColor, permissions: defaultPermissions(id) }] };
     setTeam(next);
     setRoleName('');
     saveTeam(next, 'Роль добавлена');
@@ -209,31 +258,59 @@ export default function AdminPage() {
     saveTeam(next, 'Роль удалена');
   }
 
+  function toggleRolePermission(roleId: string, key: keyof RolePermissions, value: boolean) {
+    setTeam((current) => ({
+      ...current,
+      roles: current.roles.map((role) => role.id === roleId ? { ...role, permissions: { ...role.permissions, [key]: value } } : role),
+    }));
+  }
+
   function addPerson(e: React.FormEvent) {
     e.preventDefault();
     const name = personName.trim();
+    const login = normalizeLogin(personLogin);
+    const accountPassword = personPassword.trim();
     if (!name) return;
+    if (!login) {
+      setNotice({ type: 'error', text: 'Укажите логин для аккаунта' });
+      return;
+    }
+    if (accountPassword.length < 6) {
+      setNotice({ type: 'error', text: 'Пароль должен быть не короче 6 символов' });
+      return;
+    }
+    if (team.people.some((person) => person.login.toLowerCase() === login)) {
+      setNotice({ type: 'error', text: 'Такой логин уже занят' });
+      return;
+    }
     const roleId = personRoleId || team.roles[0]?.id || 'owner';
     const next = {
       ...team,
-      people: [...team.people, { id: createId('person', name), name, handle: personHandle.trim(), roleId, active: true }],
+      people: [...team.people, { id: createId('person', name), name, login, handle: personHandle.trim(), password: accountPassword, roleId, active: true }],
     };
     setTeam(next);
     setPersonName('');
+    setPersonLogin('');
     setPersonHandle('');
+    setPersonPassword('');
     setPersonRoleId(roleId);
-    saveTeam(next, 'Исполнитель добавлен');
+    saveTeam(next, 'Аккаунт исполнителя создан');
   }
 
   function removePerson(personId: string) {
     const next = { ...team, people: team.people.filter((person) => person.id !== personId) };
     setTeam(next);
+    setPasswordDrafts((current) => {
+      const rest = { ...current };
+      delete rest[personId];
+      return rest;
+    });
     saveTeam(next, 'Исполнитель удалён');
   }
 
   async function patchTask(task: Task, payload: Partial<Pick<Task, 'status' | 'assigneeId' | 'urgency'>> & { done?: boolean }) {
-    if (!owner) {
-      setNotice({ type: 'error', text: 'Сначала войдите как владелец' });
+    if (!canManageTasks) {
+      setNotice({ type: 'error', text: 'Нужно право управления задачами' });
       return;
     }
 
@@ -284,8 +361,9 @@ export default function AdminPage() {
         <aside className="side adminSide">
           <div className="panel owner">
             <h2>Доступ</h2>
-            <p>{owner ? 'Можно сохранять команду и назначать задачи.' : 'Войдите, чтобы редактировать админ-панель.'}</p>
-            {owner ? <button onClick={logout}>Выйти</button> : <form onSubmit={login}><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Пароль" required /><button>Войти</button></form>}
+            <p>{canManageTeam ? 'Можно сохранять команду, аккаунты и назначать задачи.' : 'Войдите как владелец или аккаунтом с правом команды.'}</p>
+            {owner ? <button onClick={logout}>Выйти</button> : <form onSubmit={login}><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Пароль владельца" required /><button>Войти</button></form>}
+            {!owner && currentUser ? <p className="mutedText">Аккаунт: {currentUser.name}</p> : null}
           </div>
           {notice && <p className={`notice ${notice.type}`}>{notice.text}</p>}
         </aside>
@@ -295,19 +373,24 @@ export default function AdminPage() {
             <div className="panel adminPanel">
               <div className="tasksHead">
                 <div><p className="eyebrow smallEyebrow">Роли</p><h2>Матрица ролей</h2></div>
-                <button disabled={!owner || saving} onClick={() => saveTeam()}>{saving ? 'Сохраняю...' : 'Сохранить'}</button>
+                <button disabled={!canManageTeam || saving} onClick={() => saveTeam()}>{saving ? 'Сохраняю...' : 'Сохранить'}</button>
               </div>
               <form className="inlineForm" onSubmit={addRole}>
-                <input disabled={!owner} value={roleName} onChange={(e) => setRoleName(e.target.value)} placeholder="Например: QA" />
-                <input aria-label="Цвет роли" className="colorInput" disabled={!owner} type="color" value={roleColor} onChange={(e) => setRoleColor(e.target.value)} />
-                <button disabled={!owner || !roleName.trim()}>Добавить роль</button>
+                <input disabled={!canManageTeam} value={roleName} onChange={(e) => setRoleName(e.target.value)} placeholder="Например: QA" />
+                <input aria-label="Цвет роли" className="colorInput" disabled={!canManageTeam} type="color" value={roleColor} onChange={(e) => setRoleColor(e.target.value)} />
+                <button disabled={!canManageTeam || !roleName.trim()}>Добавить роль</button>
               </form>
               <div className="editableList">
-                {team.roles.map((role) => <div className="editableRow" key={role.id}>
+                {team.roles.map((role) => <div className="editableRow roleEditRow" key={role.id}>
                   <span className="roleColor" style={{ backgroundColor: role.color }} />
-                  <input disabled={!owner} value={role.name} onChange={(e) => setTeam((current) => ({ ...current, roles: current.roles.map((item) => item.id === role.id ? { ...item, name: e.target.value } : item) }))} />
-                  <input aria-label="Цвет роли" className="colorInput" disabled={!owner} type="color" value={role.color} onChange={(e) => setTeam((current) => ({ ...current, roles: current.roles.map((item) => item.id === role.id ? { ...item, color: e.target.value } : item) }))} />
-                  <button className="danger" disabled={!owner || team.roles.length <= 1} onClick={() => removeRole(role.id)}>Удалить</button>
+                  <input disabled={!canManageTeam} value={role.name} onChange={(e) => setTeam((current) => ({ ...current, roles: current.roles.map((item) => item.id === role.id ? { ...item, name: e.target.value } : item) }))} />
+                  <input aria-label="Цвет роли" className="colorInput" disabled={!canManageTeam} type="color" value={role.color} onChange={(e) => setTeam((current) => ({ ...current, roles: current.roles.map((item) => item.id === role.id ? { ...item, color: e.target.value } : item) }))} />
+                  <div className="permissionSet">
+                    <label className="toggleLine"><input disabled={!canManageTeam} type="checkbox" checked={role.permissions.viewAllTasks} onChange={(e) => toggleRolePermission(role.id, 'viewAllTasks', e.target.checked)} /> Все задачи</label>
+                    <label className="toggleLine"><input disabled={!canManageTeam} type="checkbox" checked={role.permissions.manageTasks} onChange={(e) => toggleRolePermission(role.id, 'manageTasks', e.target.checked)} /> Задачи</label>
+                    <label className="toggleLine"><input disabled={!canManageTeam} type="checkbox" checked={role.permissions.manageTeam} onChange={(e) => toggleRolePermission(role.id, 'manageTeam', e.target.checked)} /> Команда</label>
+                  </div>
+                  <button className="danger" disabled={!canManageTeam || team.roles.length <= 1} onClick={() => removeRole(role.id)}>Удалить</button>
                 </div>)}
               </div>
             </div>
@@ -315,28 +398,32 @@ export default function AdminPage() {
             <div className="panel adminPanel">
               <div className="tasksHead">
                 <div><p className="eyebrow smallEyebrow">Люди</p><h2>Исполнители</h2></div>
-                <button disabled={!owner || saving} onClick={() => saveTeam()}>{saving ? 'Сохраняю...' : 'Сохранить'}</button>
+                <button disabled={!canManageTeam || saving} onClick={() => saveTeam()}>{saving ? 'Сохраняю...' : 'Сохранить'}</button>
               </div>
-              <form className="inlineForm personForm" onSubmit={addPerson}>
-                <input disabled={!owner} value={personName} onChange={(e) => setPersonName(e.target.value)} placeholder="Имя" />
-                <input disabled={!owner} value={personHandle} onChange={(e) => setPersonHandle(e.target.value)} placeholder="@username или контакт" />
-                <select disabled={!owner} value={personRoleId || team.roles[0]?.id || ''} onChange={(e) => setPersonRoleId(e.target.value)}>
+              <form className="inlineForm personForm accountForm" onSubmit={addPerson}>
+                <input disabled={!canManageTeam} value={personName} onChange={(e) => setPersonName(e.target.value)} placeholder="Имя" />
+                <input disabled={!canManageTeam} value={personLogin} onChange={(e) => setPersonLogin(e.target.value)} placeholder="Логин или email" />
+                <input disabled={!canManageTeam} value={personPassword} onChange={(e) => setPersonPassword(e.target.value)} placeholder="Пароль" type="password" autoComplete="new-password" />
+                <input disabled={!canManageTeam} value={personHandle} onChange={(e) => setPersonHandle(e.target.value)} placeholder="@username или контакт" />
+                <select disabled={!canManageTeam} value={personRoleId || team.roles[0]?.id || ''} onChange={(e) => setPersonRoleId(e.target.value)}>
                   {team.roles.map((role) => <option key={role.id} value={role.id}>{role.name}</option>)}
                 </select>
-                <button disabled={!owner || !personName.trim()}>Добавить</button>
+                <button disabled={!canManageTeam || !personName.trim() || !personLogin.trim() || personPassword.trim().length < 6}>Создать аккаунт</button>
               </form>
               <div className="editableList">
                 {team.people.length === 0 ? <div className="empty compactEmpty">Исполнителей пока нет.</div> : team.people.map((person) => {
                   const role = rolesById.get(person.roleId);
                   return <div className="editableRow personEditRow" key={person.id}>
                     <span className="avatarDot" style={{ backgroundColor: role?.color ?? '#68f4ff' }}>{person.name[0] || '?'}</span>
-                    <input disabled={!owner} value={person.name} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, name: e.target.value } : item) }))} />
-                    <input disabled={!owner} value={person.handle} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, handle: e.target.value } : item) }))} placeholder="@handle" />
-                    <select disabled={!owner} value={person.roleId} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, roleId: e.target.value } : item) }))}>
+                    <input disabled={!canManageTeam} value={person.name} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, name: e.target.value } : item) }))} />
+                    <input disabled={!canManageTeam} value={person.login} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, login: normalizeLogin(e.target.value) } : item) }))} placeholder="login" />
+                    <input disabled={!canManageTeam} value={person.handle} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, handle: e.target.value } : item) }))} placeholder="@handle" />
+                    <input disabled={!canManageTeam} type="password" autoComplete="new-password" value={passwordDrafts[person.id] ?? ''} onChange={(e) => setPasswordDrafts((current) => ({ ...current, [person.id]: e.target.value }))} placeholder={person.hasPassword ? 'Новый пароль' : 'Задать пароль'} />
+                    <select disabled={!canManageTeam} value={person.roleId} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, roleId: e.target.value } : item) }))}>
                       {team.roles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
                     </select>
-                    <label className="toggleLine"><input disabled={!owner} type="checkbox" checked={person.active} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, active: e.target.checked } : item) }))} /> Активен</label>
-                    <button className="danger" disabled={!owner} onClick={() => removePerson(person.id)}>Удалить</button>
+                    <label className="toggleLine"><input disabled={!canManageTeam} type="checkbox" checked={person.active} onChange={(e) => setTeam((current) => ({ ...current, people: current.people.map((item) => item.id === person.id ? { ...item, active: e.target.checked } : item) }))} /> Активен</label>
+                    <button className="danger" disabled={!canManageTeam} onClick={() => removePerson(person.id)}>Удалить</button>
                   </div>;
                 })}
               </div>
@@ -364,17 +451,17 @@ export default function AdminPage() {
                       <p>{assignee ? `Назначено: ${assignee.name} · ${role?.name ?? 'роль не задана'}` : 'Исполнитель не назначен'}</p>
                     </div>
                     <div className="assignmentControls">
-                      <select disabled={!owner} value={task.assigneeId ?? ''} onChange={(e) => patchTask(task, { assigneeId: e.target.value || null })}>
+                      <select disabled={!canManageTasks} value={task.assigneeId ?? ''} onChange={(e) => patchTask(task, { assigneeId: e.target.value || null })}>
                         <option value="">Без исполнителя</option>
                         {team.people.filter((person) => person.active).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
                       </select>
-                      <select disabled={!owner} value={task.urgency} onChange={(e) => patchTask(task, { urgency: Number(e.target.value) })}>
+                      <select disabled={!canManageTasks} value={task.urgency} onChange={(e) => patchTask(task, { urgency: Number(e.target.value) })}>
                         {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>P{value}</option>)}
                       </select>
                       <div className="segmented compactSegment">
-                        {(['todo', 'in-progress', 'review'] as WorkflowStatus[]).map((status) => <button disabled={!owner} className={task.status === status ? 'active' : ''} key={status} onClick={() => patchTask(task, { status })}>{STATUS_META[status].short}</button>)}
+                        {(['todo', 'in-progress', 'review'] as WorkflowStatus[]).map((status) => <button disabled={!canManageTasks} className={task.status === status ? 'active' : ''} key={status} onClick={() => patchTask(task, { status })}>{STATUS_META[status].short}</button>)}
                       </div>
-                      <button disabled={!owner} onClick={() => patchTask(task, { done: true })}>Готово</button>
+                      <button disabled={!canManageTasks} onClick={() => patchTask(task, { done: true })}>Готово</button>
                     </div>
                   </article>;
                 })}
