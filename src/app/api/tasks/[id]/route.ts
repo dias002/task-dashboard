@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { deleteCompletedTask, setTaskDone } from '@/lib/githubTasks';
+import { deleteCompletedTask, updateTask, type WorkflowStatus } from '@/lib/githubTasks';
 import { isOwner } from '@/lib/ownerAuth';
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -10,11 +10,16 @@ function errorMessage(e: unknown): string {
 
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
-    if (!(await isOwner())) return NextResponse.json({ error: 'Only owner can complete tasks' }, { status: 401 });
+    if (!(await isOwner())) return NextResponse.json({ error: 'Only owner can update tasks' }, { status: 401 });
 
     const { id } = await params;
     const data = await req.json();
-    const task = await setTaskDone(Number(id), Boolean(data.done));
+    const task = await updateTask(Number(id), {
+      done: typeof data.done === 'boolean' ? data.done : undefined,
+      status: typeof data.status === 'string' ? data.status as WorkflowStatus : undefined,
+      assigneeId: typeof data.assigneeId === 'string' || data.assigneeId === null ? data.assigneeId : undefined,
+      urgency: Number.isInteger(Number(data.urgency)) ? Number(data.urgency) : undefined,
+    });
     return NextResponse.json({ task });
   } catch (e: unknown) {
     return NextResponse.json({ error: errorMessage(e) }, { status: 500 });

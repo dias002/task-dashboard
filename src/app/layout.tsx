@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'Task Dashboard',
-  description: 'Public dashboard for collecting and completing tasks.',
+  description: 'Sci-fi task tracker with roles, people, assignments, and owner controls.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
