@@ -52,12 +52,15 @@ const DEFAULT_TEAM: TeamConfig = {
     { id: 'owner', name: 'Владелец', color: '#68f4ff' },
     { id: 'design', name: 'Дизайн', color: '#ff3df2' },
     { id: 'dev', name: 'Разработка', color: '#b8ff4f' },
+    { id: 'analytics', name: 'Аналитик', color: '#ffb84f' },
+    { id: 'marketing', name: 'Маркетолог', color: '#497cff' },
+    { id: 'quality', name: 'Менеджмент качества', color: '#9d7cff' },
   ],
   people: [],
   updatedAt: new Date(0).toISOString(),
 };
 
-const ROLE_COLORS = ['#68f4ff', '#ff3df2', '#b8ff4f', '#497cff', '#ffb84f', '#ff4b6a'];
+const ROLE_COLORS = ['#68f4ff', '#ff3df2', '#b8ff4f', '#ffb84f', '#497cff', '#9d7cff', '#ff4b6a'];
 
 function createId(prefix: string, name: string): string {
   const base = name.trim().toLowerCase().replace(/[^a-z0-9а-яё]+/gi, '-').replace(/^-|-$/g, '').slice(0, 30);
