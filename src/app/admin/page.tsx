@@ -355,7 +355,6 @@ export default function AdminPage() {
         <a href="/">Задачи</a>
         <a href="/completed">Архив</a>
         <a className="active" href="/admin">Команда и роли</a>
-        <a href="/dashboard">Метрика</a>
       </nav>
 
       <section className="adminWorkspace">
