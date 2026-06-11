@@ -302,6 +302,7 @@ export default function Home() {
         <a className="active" href="/">Задачи</a>
         <a href="/completed">Архив</a>
         <a href="/admin">Команда и роли</a>
+        <a href="/dashboard">Метрика</a>
       </nav>
 
       <section className="layout trackerLayout">
